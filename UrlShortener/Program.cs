@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,14 @@ InitializeDatabase(connectionString);
 
 const int MaxCodeAttempts = 10;
 
+// Aliases that would clash with existing routes or files
+var reservedAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "api",
+    "index.html",
+    "favicon.ico"
+};
+
 app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
 {
     if (string.IsNullOrWhiteSpace(request.Url))
@@ -22,25 +31,51 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
     if (!IsValidHttpUrl(url))
         return Results.BadRequest(new { error = "The URL must be an absolute http or https URL." });
 
-    using var connection = OpenConnection(connectionString);
-    var createdAt = DateTime.UtcNow;
+    // An empty alias is treated as "no alias"
+    var alias = string.IsNullOrWhiteSpace(request.Alias) ? null : request.Alias.Trim();
 
-    // Generate a code, retrying if it is already taken
-    string? code = null;
-    for (var attempt = 0; attempt < MaxCodeAttempts; attempt++)
+    if (alias is not null)
     {
-        var candidate = GenerateCode();
-        if (TryInsertLink(connection, candidate, url, createdAt))
-        {
-            code = candidate;
-            break;
-        }
+        if (!IsValidAlias(alias))
+            return Results.BadRequest(new
+            {
+                error = "The alias must be 3-32 characters long and contain only letters, digits, '-' and '_'."
+            });
+
+        if (reservedAliases.Contains(alias))
+            return Results.BadRequest(new { error = $"The alias '{alias}' is reserved." });
     }
 
-    if (code is null)
-        return Results.Json(
-            new { error = "Could not generate a unique short code. Please try again." },
-            statusCode: StatusCodes.Status500InternalServerError);
+    using var connection = OpenConnection(connectionString);
+    var createdAt = DateTime.UtcNow;
+    string? code = null;
+
+    if (alias is not null)
+    {
+        // Custom alias: a single attempt, 409 if it is already taken
+        if (!TryInsertLink(connection, alias, url, createdAt))
+            return Results.Conflict(new { error = $"The alias '{alias}' is already taken." });
+
+        code = alias;
+    }
+    else
+    {
+        // Generated code: retry if it is already taken
+        for (var attempt = 0; attempt < MaxCodeAttempts; attempt++)
+        {
+            var candidate = GenerateCode();
+            if (TryInsertLink(connection, candidate, url, createdAt))
+            {
+                code = candidate;
+                break;
+            }
+        }
+
+        if (code is null)
+            return Results.Json(
+                new { error = "Could not generate a unique short code. Please try again." },
+                statusCode: StatusCodes.Status500InternalServerError);
+    }
 
     var shortUrl = $"{context.Request.Scheme}://{context.Request.Host}/{code}";
     return Results.Ok(new { code, shortUrl, url, createdAt });
@@ -108,6 +143,10 @@ static bool IsValidHttpUrl(string url) =>
     Uri.TryCreate(url, UriKind.Absolute, out var uri)
     && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
+// 3-32 characters: letters, digits, '-' and '_'
+static bool IsValidAlias(string alias) =>
+    Regex.IsMatch(alias, "^[A-Za-z0-9_-]{3,32}$");
+
 // 7 random Base62 characters
 static string GenerateCode()
 {
@@ -115,4 +154,4 @@ static string GenerateCode()
     return RandomNumberGenerator.GetString(alphabet, 7);
 }
 
-record CreateLinkRequest(string? Url);
+record CreateLinkRequest(string? Url, string? Alias);
