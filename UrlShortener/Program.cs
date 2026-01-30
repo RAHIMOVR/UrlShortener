@@ -85,13 +85,22 @@ app.MapGet("/{code}", (string code) =>
 {
     using var connection = OpenConnection(connectionString);
 
+    // Count the click and read the URL in a single statement
     using var command = connection.CreateCommand();
-    command.CommandText = "SELECT url FROM links WHERE code = $code";
+    command.CommandText = """
+        UPDATE links
+        SET clicks = clicks + 1,
+            last_accessed_at = $now
+        WHERE code = $code
+        RETURNING url
+        """;
     command.Parameters.AddWithValue("$code", code);
+    command.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
 
     var url = command.ExecuteScalar() as string;
 
-    return url is null ? Results.NotFound() : Results.Redirect(url);
+    // 302 (temporary) so browsers don't cache the redirect and skip the counter
+    return url is null ? Results.NotFound() : Results.Redirect(url, permanent: false);
 });
 
 app.Run();
