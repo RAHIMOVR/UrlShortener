@@ -81,6 +81,34 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
     return Results.Ok(new { code, shortUrl, url, createdAt });
 });
 
+app.MapGet("/api/links/{code}", (string code) =>
+{
+    using var connection = OpenConnection(connectionString);
+
+    using var command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT code, url, clicks, created_at, last_accessed_at, expires_at
+        FROM links
+        WHERE code = $code
+        """;
+    command.Parameters.AddWithValue("$code", code);
+
+    using var reader = command.ExecuteReader();
+
+    if (!reader.Read())
+        return Results.NotFound(new { error = $"No link found with code '{code}'." });
+
+    return Results.Ok(new
+    {
+        code = reader.GetString(0),
+        url = reader.GetString(1),
+        clicks = reader.GetInt64(2),
+        createdAt = reader.GetString(3),
+        lastAccessedAt = reader.IsDBNull(4) ? null : reader.GetString(4),
+        expiresAt = reader.IsDBNull(5) ? null : reader.GetString(5)
+    });
+});
+
 app.MapGet("/{code}", (string code) =>
 {
     using var connection = OpenConnection(connectionString);
