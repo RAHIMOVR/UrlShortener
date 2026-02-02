@@ -12,6 +12,8 @@ var connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }
 InitializeDatabase(connectionString);
 
 const int MaxCodeAttempts = 10;
+const int MinExpiryDays = 1;
+const int MaxExpiryDays = 365;
 
 // Aliases that would clash with existing routes or files
 var reservedAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -46,14 +48,21 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
             return Results.BadRequest(new { error = $"The alias '{alias}' is reserved." });
     }
 
+    if (request.ExpiresInDays is < MinExpiryDays or > MaxExpiryDays)
+        return Results.BadRequest(new
+        {
+            error = $"'expiresInDays' must be between {MinExpiryDays} and {MaxExpiryDays}."
+        });
+
     using var connection = OpenConnection(connectionString);
     var createdAt = DateTime.UtcNow;
+    DateTime? expiresAt = request.ExpiresInDays is int days ? createdAt.AddDays(days) : null;
     string? code = null;
 
     if (alias is not null)
     {
         // Custom alias: a single attempt, 409 if it is already taken
-        if (!TryInsertLink(connection, alias, url, createdAt))
+        if (!TryInsertLink(connection, alias, url, createdAt, expiresAt))
             return Results.Conflict(new { error = $"The alias '{alias}' is already taken." });
 
         code = alias;
@@ -64,7 +73,7 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
         for (var attempt = 0; attempt < MaxCodeAttempts; attempt++)
         {
             var candidate = GenerateCode();
-            if (TryInsertLink(connection, candidate, url, createdAt))
+            if (TryInsertLink(connection, candidate, url, createdAt, expiresAt))
             {
                 code = candidate;
                 break;
@@ -78,7 +87,7 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
     }
 
     var shortUrl = $"{context.Request.Scheme}://{context.Request.Host}/{code}";
-    return Results.Ok(new { code, shortUrl, url, createdAt });
+    return Results.Ok(new { code, shortUrl, url, createdAt, expiresAt });
 });
 
 app.MapGet("/api/links/{code}", (string code) =>
@@ -112,23 +121,34 @@ app.MapGet("/api/links/{code}", (string code) =>
 app.MapGet("/{code}", (string code) =>
 {
     using var connection = OpenConnection(connectionString);
+    var now = DateTime.UtcNow.ToString("O");
 
-    // Count the click and read the URL in a single statement
+    // Count the click and read the URL, but only if the link has not expired
     using var command = connection.CreateCommand();
     command.CommandText = """
         UPDATE links
         SET clicks = clicks + 1,
             last_accessed_at = $now
         WHERE code = $code
+          AND (expires_at IS NULL OR expires_at > $now)
         RETURNING url
         """;
     command.Parameters.AddWithValue("$code", code);
-    command.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+    command.Parameters.AddWithValue("$now", now);
 
     var url = command.ExecuteScalar() as string;
 
     // 302 (temporary) so browsers don't cache the redirect and skip the counter
-    return url is null ? Results.NotFound() : Results.Redirect(url, permanent: false);
+    if (url is not null)
+        return Results.Redirect(url, permanent: false);
+
+    // Nothing was updated: the link is either expired or does not exist
+    if (LinkExists(connection, code))
+        return Results.Json(
+            new { error = "This link has expired." },
+            statusCode: StatusCodes.Status410Gone);
+
+    return Results.NotFound();
 });
 
 app.Run();
@@ -160,19 +180,30 @@ static SqliteConnection OpenConnection(string connectionString)
 }
 
 // Insert a link; returns false if the code already exists
-static bool TryInsertLink(SqliteConnection connection, string code, string url, DateTime createdAt)
+static bool TryInsertLink(
+    SqliteConnection connection, string code, string url, DateTime createdAt, DateTime? expiresAt)
 {
     using var command = connection.CreateCommand();
     command.CommandText = """
-        INSERT INTO links (code, url, created_at)
-        VALUES ($code, $url, $createdAt)
+        INSERT INTO links (code, url, created_at, expires_at)
+        VALUES ($code, $url, $createdAt, $expiresAt)
         ON CONFLICT(code) DO NOTHING
         """;
     command.Parameters.AddWithValue("$code", code);
     command.Parameters.AddWithValue("$url", url);
     command.Parameters.AddWithValue("$createdAt", createdAt.ToString("O"));
+    command.Parameters.AddWithValue("$expiresAt", (object?)expiresAt?.ToString("O") ?? DBNull.Value);
 
     return command.ExecuteNonQuery() == 1;
+}
+
+static bool LinkExists(SqliteConnection connection, string code)
+{
+    using var command = connection.CreateCommand();
+    command.CommandText = "SELECT 1 FROM links WHERE code = $code";
+    command.Parameters.AddWithValue("$code", code);
+
+    return command.ExecuteScalar() is not null;
 }
 
 // Accept only absolute http/https URLs
@@ -191,4 +222,4 @@ static string GenerateCode()
     return RandomNumberGenerator.GetString(alphabet, 7);
 }
 
-record CreateLinkRequest(string? Url, string? Alias);
+record CreateLinkRequest(string? Url, string? Alias, int? ExpiresInDays);
