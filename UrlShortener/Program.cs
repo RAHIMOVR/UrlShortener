@@ -14,6 +14,8 @@ InitializeDatabase(connectionString);
 const int MaxCodeAttempts = 10;
 const int MinExpiryDays = 1;
 const int MaxExpiryDays = 365;
+const int DefaultPageSize = 20;
+const int MaxPageSize = 100;
 
 // Aliases that would clash with existing routes or files
 var reservedAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -86,8 +88,60 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
                 statusCode: StatusCodes.Status500InternalServerError);
     }
 
-    var shortUrl = $"{context.Request.Scheme}://{context.Request.Host}/{code}";
+    var shortUrl = BuildShortUrl(context, code);
     return Results.Ok(new { code, shortUrl, url, createdAt, expiresAt });
+});
+
+app.MapGet("/api/links", (int? page, int? pageSize, HttpContext context) =>
+{
+    var currentPage = page ?? 1;
+    var size = pageSize ?? DefaultPageSize;
+
+    if (currentPage < 1)
+        return Results.BadRequest(new { error = "'page' must be 1 or greater." });
+
+    if (size < 1 || size > MaxPageSize)
+        return Results.BadRequest(new { error = $"'pageSize' must be between 1 and {MaxPageSize}." });
+
+    using var connection = OpenConnection(connectionString);
+
+    // Total number of links, so the client knows how many pages there are
+    using var countCommand = connection.CreateCommand();
+    countCommand.CommandText = "SELECT COUNT(*) FROM links";
+    var total = (long)countCommand.ExecuteScalar()!;
+
+    // One page of links, newest first
+    using var command = connection.CreateCommand();
+    command.CommandText = """
+        SELECT code, url, clicks, created_at, last_accessed_at, expires_at
+        FROM links
+        ORDER BY created_at DESC, code
+        LIMIT $limit OFFSET $offset
+        """;
+    command.Parameters.AddWithValue("$limit", size);
+    command.Parameters.AddWithValue("$offset", (currentPage - 1) * size);
+
+    var items = new List<object>();
+    using var reader = command.ExecuteReader();
+
+    while (reader.Read())
+    {
+        var code = reader.GetString(0);
+        items.Add(new
+        {
+            code,
+            shortUrl = BuildShortUrl(context, code),
+            url = reader.GetString(1),
+            clicks = reader.GetInt64(2),
+            createdAt = reader.GetString(3),
+            lastAccessedAt = reader.IsDBNull(4) ? null : reader.GetString(4),
+            expiresAt = reader.IsDBNull(5) ? null : reader.GetString(5)
+        });
+    }
+
+    var totalPages = (int)Math.Ceiling(total / (double)size);
+
+    return Results.Ok(new { page = currentPage, pageSize = size, total, totalPages, items });
 });
 
 app.MapGet("/api/links/{code}", (string code) =>
@@ -205,6 +259,9 @@ static bool LinkExists(SqliteConnection connection, string code)
 
     return command.ExecuteScalar() is not null;
 }
+
+static string BuildShortUrl(HttpContext context, string code) =>
+    $"{context.Request.Scheme}://{context.Request.Host}/{code}";
 
 // Accept only absolute http/https URLs
 static bool IsValidHttpUrl(string url) =>
