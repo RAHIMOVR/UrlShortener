@@ -172,6 +172,21 @@ app.MapGet("/api/links/{code}", (string code) =>
     });
 });
 
+app.MapDelete("/api/links/{code}", (string code) =>
+{
+    using var connection = OpenConnection(connectionString);
+
+    using var command = connection.CreateCommand();
+    command.CommandText = "DELETE FROM links WHERE code = $code";
+    command.Parameters.AddWithValue("$code", code);
+
+    var deleted = command.ExecuteNonQuery();
+
+    return deleted == 1
+        ? Results.NoContent()
+        : Results.NotFound(new { error = $"No link found with code '{code}'." });
+});
+
 app.MapGet("/{code}", (string code) =>
 {
     using var connection = OpenConnection(connectionString);
