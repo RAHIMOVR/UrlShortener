@@ -11,6 +11,12 @@ var connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }
 
 InitializeDatabase(connectionString);
 
+// Serve wwwroot/index.html at "/". These run before routing so that
+// files like /index.html are not caught by the /{code} redirect route.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.UseRouting();
+
 const int MaxCodeAttempts = 10;
 const int MinExpiryDays = 1;
 const int MaxExpiryDays = 365;
