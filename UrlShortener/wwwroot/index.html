@@ -103,6 +103,28 @@
             cursor: default;
         }
 
+        button.secondary {
+            padding: 6px 14px;
+            font-size: 14px;
+            background: #ffffff;
+            color: #1f2328;
+            border: 1px solid #d0d7de;
+        }
+
+        button.secondary:hover {
+            background: #f3f4f6;
+        }
+
+        .error {
+            margin-top: 16px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            background: #fff1f0;
+            border: 1px solid #ffc9c4;
+            color: #b42318;
+            font-size: 14px;
+        }
+
         .result {
             margin-top: 20px;
             padding: 16px;
@@ -111,10 +133,29 @@
             border: 1px solid #b6d4fe;
         }
 
+        .result-label {
+            margin: 0 0 8px;
+            font-size: 14px;
+            color: #656d76;
+        }
+
+        .result-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
         .result a {
             color: #0969da;
             font-weight: 600;
             word-break: break-all;
+        }
+
+        .result-meta {
+            margin: 8px 0 0;
+            font-size: 13px;
+            color: #656d76;
         }
 
         .hidden {
@@ -163,9 +204,15 @@
             <button id="submit-button" type="submit">Shorten</button>
         </form>
 
+        <div id="error" class="error hidden" role="alert"></div>
+
         <div id="result" class="result hidden">
-            Your short link:
-            <a id="short-url" href="#" target="_blank" rel="noopener"></a>
+            <p class="result-label">Your short link</p>
+            <div class="result-row">
+                <a id="short-url" href="#" target="_blank" rel="noopener"></a>
+                <button id="copy-button" class="secondary" type="button">Copy</button>
+            </div>
+            <p id="result-meta" class="result-meta"></p>
         </div>
     </section>
 </main>
@@ -173,8 +220,38 @@
 <script>
     const form = document.getElementById("create-form");
     const submitButton = document.getElementById("submit-button");
+    const errorBox = document.getElementById("error");
     const result = document.getElementById("result");
     const shortUrlLink = document.getElementById("short-url");
+    const resultMeta = document.getElementById("result-meta");
+    const copyButton = document.getElementById("copy-button");
+
+    function showError(message) {
+        errorBox.textContent = message;
+        errorBox.classList.remove("hidden");
+    }
+
+    function hideError() {
+        errorBox.textContent = "";
+        errorBox.classList.add("hidden");
+    }
+
+    // Read the API's { "error": "..." } message, or fall back to a generic one
+    async function readError(response) {
+        try {
+            const data = await response.json();
+            if (data && data.error) {
+                return data.error;
+            }
+        } catch {
+            // Response body was empty or not JSON
+        }
+        return `Request failed (${response.status}).`;
+    }
+
+    function formatDate(value) {
+        return new Date(value).toLocaleString();
+    }
 
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -187,6 +264,7 @@
         };
 
         submitButton.disabled = true;
+        hideError();
         result.classList.add("hidden");
 
         try {
@@ -197,20 +275,43 @@
             });
 
             if (!response.ok) {
-                alert("Could not create the link.");
+                showError(await readError(response));
                 return;
             }
 
             const link = await response.json();
             shortUrlLink.href = link.shortUrl;
             shortUrlLink.textContent = link.shortUrl;
+            resultMeta.textContent = link.expiresAt
+                ? `Expires ${formatDate(link.expiresAt)}`
+                : "Never expires";
+            copyButton.textContent = "Copy";
             result.classList.remove("hidden");
             form.reset();
         } catch {
-            alert("Could not reach the server.");
+            showError("Could not reach the server. Is it running?");
         } finally {
             submitButton.disabled = false;
         }
+    });
+
+    copyButton.addEventListener("click", async () => {
+        const text = shortUrlLink.textContent;
+
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            // Fallback for browsers that block the clipboard API
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+        }
+
+        copyButton.textContent = "Copied";
+        setTimeout(() => (copyButton.textContent = "Copy"), 1500);
     });
 </script>
 </body>
