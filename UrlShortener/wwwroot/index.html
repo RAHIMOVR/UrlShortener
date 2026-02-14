@@ -18,7 +18,7 @@
         }
 
         main {
-            max-width: 720px;
+            max-width: 960px;
             margin: 48px auto;
             padding: 0 16px;
         }
@@ -26,6 +26,11 @@
         h1 {
             margin: 0 0 4px;
             font-size: 28px;
+        }
+
+        h2 {
+            margin: 0 0 16px;
+            font-size: 20px;
         }
 
         .subtitle {
@@ -38,6 +43,7 @@
             border: 1px solid #d8dee4;
             border-radius: 8px;
             padding: 24px;
+            margin-bottom: 24px;
         }
 
         label {
@@ -115,6 +121,11 @@
             background: #f3f4f6;
         }
 
+        button.secondary:disabled {
+            color: #8c959f;
+            background: #ffffff;
+        }
+
         .error {
             margin-top: 16px;
             padding: 12px 16px;
@@ -158,6 +169,87 @@
             color: #656d76;
         }
 
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th,
+        td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #eaeef2;
+            vertical-align: top;
+        }
+
+        th {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #656d76;
+        }
+
+        td a {
+            color: #0969da;
+            text-decoration: none;
+        }
+
+        td a:hover {
+            text-decoration: underline;
+        }
+
+        .code-cell {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            white-space: nowrap;
+        }
+
+        .url-cell {
+            max-width: 320px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .number-cell {
+            text-align: right;
+        }
+
+        .date-cell {
+            white-space: nowrap;
+            color: #656d76;
+        }
+
+        .expired {
+            color: #b42318;
+            font-weight: 600;
+        }
+
+        .empty {
+            padding: 24px 12px;
+            text-align: center;
+            color: #656d76;
+        }
+
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 16px;
+            font-size: 14px;
+            color: #656d76;
+        }
+
+        .pagination-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
         .hidden {
             display: none;
         }
@@ -175,6 +267,7 @@
     <h1>URL Shortener</h1>
     <p class="subtitle">Turn long links into short ones.</p>
 
+    <!-- Create a link -->
     <section class="card">
         <form id="create-form">
             <div class="field">
@@ -215,25 +308,49 @@
             <p id="result-meta" class="result-meta"></p>
         </div>
     </section>
+
+    <!-- List of links -->
+    <section class="card">
+        <h2>Your links</h2>
+
+        <div id="list-error" class="error hidden" role="alert"></div>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                <tr>
+                    <th>Code</th>
+                    <th>Original URL</th>
+                    <th class="number-cell">Clicks</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                </tr>
+                </thead>
+                <tbody id="links-body"></tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <span id="page-info"></span>
+            <div class="pagination-buttons">
+                <button id="prev-button" class="secondary" type="button">Previous</button>
+                <button id="next-button" class="secondary" type="button">Next</button>
+            </div>
+        </div>
+    </section>
 </main>
 
 <script>
-    const form = document.getElementById("create-form");
-    const submitButton = document.getElementById("submit-button");
-    const errorBox = document.getElementById("error");
-    const result = document.getElementById("result");
-    const shortUrlLink = document.getElementById("short-url");
-    const resultMeta = document.getElementById("result-meta");
-    const copyButton = document.getElementById("copy-button");
+    // ---------- Shared helpers ----------
 
-    function showError(message) {
-        errorBox.textContent = message;
-        errorBox.classList.remove("hidden");
+    function show(element, message) {
+        element.textContent = message;
+        element.classList.remove("hidden");
     }
 
-    function hideError() {
-        errorBox.textContent = "";
-        errorBox.classList.add("hidden");
+    function hide(element) {
+        element.textContent = "";
+        element.classList.add("hidden");
     }
 
     // Read the API's { "error": "..." } message, or fall back to a generic one
@@ -253,6 +370,16 @@
         return new Date(value).toLocaleString();
     }
 
+    // ---------- Create a link ----------
+
+    const form = document.getElementById("create-form");
+    const submitButton = document.getElementById("submit-button");
+    const errorBox = document.getElementById("error");
+    const result = document.getElementById("result");
+    const shortUrlLink = document.getElementById("short-url");
+    const resultMeta = document.getElementById("result-meta");
+    const copyButton = document.getElementById("copy-button");
+
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
 
@@ -264,7 +391,7 @@
         };
 
         submitButton.disabled = true;
-        hideError();
+        hide(errorBox);
         result.classList.add("hidden");
 
         try {
@@ -275,7 +402,7 @@
             });
 
             if (!response.ok) {
-                showError(await readError(response));
+                show(errorBox, await readError(response));
                 return;
             }
 
@@ -289,7 +416,7 @@
             result.classList.remove("hidden");
             form.reset();
         } catch {
-            showError("Could not reach the server. Is it running?");
+            show(errorBox, "Could not reach the server. Is it running?");
         } finally {
             submitButton.disabled = false;
         }
@@ -313,6 +440,123 @@
         copyButton.textContent = "Copied";
         setTimeout(() => (copyButton.textContent = "Copy"), 1500);
     });
+
+    // ---------- List of links ----------
+
+    const PAGE_SIZE = 10;
+    let currentPage = 1;
+    let totalPages = 1;
+
+    const linksBody = document.getElementById("links-body");
+    const listError = document.getElementById("list-error");
+    const pageInfo = document.getElementById("page-info");
+    const prevButton = document.getElementById("prev-button");
+    const nextButton = document.getElementById("next-button");
+
+    // Build a table cell with plain text (never innerHTML, since URLs come from users)
+    function textCell(text, className) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        if (className) {
+            cell.className = className;
+        }
+        return cell;
+    }
+
+    function linkCell(href, text, className) {
+        const cell = document.createElement("td");
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.textContent = text;
+        anchor.target = "_blank";
+        anchor.rel = "noopener";
+        anchor.title = text;
+        cell.appendChild(anchor);
+        if (className) {
+            cell.className = className;
+        }
+        return cell;
+    }
+
+    function expiresCell(expiresAt) {
+        if (!expiresAt) {
+            return textCell("Never", "date-cell");
+        }
+
+        const cell = textCell(formatDate(expiresAt), "date-cell");
+        if (new Date(expiresAt) <= new Date()) {
+            cell.textContent = "Expired";
+            cell.classList.add("expired");
+        }
+        return cell;
+    }
+
+    function renderLinks(items) {
+        linksBody.replaceChildren();
+
+        if (items.length === 0) {
+            const row = document.createElement("tr");
+            const cell = textCell("No links yet. Create one above.", "empty");
+            cell.colSpan = 5;
+            row.appendChild(cell);
+            linksBody.appendChild(row);
+            return;
+        }
+
+        for (const link of items) {
+            const row = document.createElement("tr");
+            row.appendChild(linkCell(link.shortUrl, link.code, "code-cell"));
+            row.appendChild(linkCell(link.url, link.url, "url-cell"));
+            row.appendChild(textCell(link.clicks, "number-cell"));
+            row.appendChild(textCell(formatDate(link.createdAt), "date-cell"));
+            row.appendChild(expiresCell(link.expiresAt));
+            linksBody.appendChild(row);
+        }
+    }
+
+    function renderPagination(total) {
+        pageInfo.textContent = total === 0
+            ? "0 links"
+            : `Page ${currentPage} of ${totalPages} (${total} links)`;
+        prevButton.disabled = currentPage <= 1;
+        nextButton.disabled = currentPage >= totalPages;
+    }
+
+    async function loadLinks(page) {
+        hide(listError);
+
+        try {
+            const response = await fetch(`/api/links?page=${page}&pageSize=${PAGE_SIZE}`);
+
+            if (!response.ok) {
+                show(listError, await readError(response));
+                return;
+            }
+
+            const data = await response.json();
+            currentPage = data.page;
+            totalPages = Math.max(data.totalPages, 1);
+
+            renderLinks(data.items);
+            renderPagination(data.total);
+        } catch {
+            show(listError, "Could not load links. Is the server running?");
+        }
+    }
+
+    prevButton.addEventListener("click", () => {
+        if (currentPage > 1) {
+            loadLinks(currentPage - 1);
+        }
+    });
+
+    nextButton.addEventListener("click", () => {
+        if (currentPage < totalPages) {
+            loadLinks(currentPage + 1);
+        }
+    });
+
+    loadLinks(1);
 </script>
 </body>
 </html>
