@@ -1,8 +1,14 @@
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Don't throw on bad input (broken JSON, wrong types); return an empty 400
+// instead, which the status code handler below turns into a JSON error
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
+
 var app = builder.Build();
 
 // Database: urls.db in the project folder
@@ -10,6 +16,36 @@ var dbPath = Path.Combine(app.Environment.ContentRootPath, "urls.db");
 var connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString();
 
 InitializeDatabase(connectionString);
+
+// Unhandled exceptions become a JSON 500 (or the exception's own status code)
+app.UseExceptionHandler(exceptionApp => exceptionApp.Run(async context =>
+{
+    var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+
+    var (status, message) = exception is BadHttpRequestException badRequest
+        ? (badRequest.StatusCode, "The request is invalid.")
+        : (StatusCodes.Status500InternalServerError, "An unexpected error occurred.");
+
+    context.Response.StatusCode = status;
+    await context.Response.WriteAsJsonAsync(new ErrorResponse(message));
+}));
+
+// Error responses without a body (unknown routes, bad input, wrong method) get a JSON body
+app.UseStatusCodePages(async statusContext =>
+{
+    var response = statusContext.HttpContext.Response;
+
+    var message = response.StatusCode switch
+    {
+        StatusCodes.Status400BadRequest => "The request is invalid. Check the JSON body and query parameters.",
+        StatusCodes.Status404NotFound => "Not found.",
+        StatusCodes.Status405MethodNotAllowed => "This HTTP method is not allowed for this route.",
+        StatusCodes.Status415UnsupportedMediaType => "The request body must be JSON (Content-Type: application/json).",
+        _ => "The request failed."
+    };
+
+    await response.WriteAsJsonAsync(new ErrorResponse(message));
+});
 
 // Serve wwwroot/index.html at "/". These run before routing so that
 // files like /index.html are not caught by the /{code} redirect route.
@@ -34,12 +70,12 @@ var reservedAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
 {
     if (string.IsNullOrWhiteSpace(request.Url))
-        return Results.BadRequest(new { error = "The 'url' field is required." });
+        return Error(StatusCodes.Status400BadRequest, "The 'url' field is required.");
 
     var url = request.Url.Trim();
 
     if (!IsValidHttpUrl(url))
-        return Results.BadRequest(new { error = "The URL must be an absolute http or https URL." });
+        return Error(StatusCodes.Status400BadRequest, "The URL must be an absolute http or https URL.");
 
     // An empty alias is treated as "no alias"
     var alias = string.IsNullOrWhiteSpace(request.Alias) ? null : request.Alias.Trim();
@@ -47,20 +83,16 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
     if (alias is not null)
     {
         if (!IsValidAlias(alias))
-            return Results.BadRequest(new
-            {
-                error = "The alias must be 3-32 characters long and contain only letters, digits, '-' and '_'."
-            });
+            return Error(StatusCodes.Status400BadRequest,
+                "The alias must be 3-32 characters long and contain only letters, digits, '-' and '_'.");
 
         if (reservedAliases.Contains(alias))
-            return Results.BadRequest(new { error = $"The alias '{alias}' is reserved." });
+            return Error(StatusCodes.Status400BadRequest, $"The alias '{alias}' is reserved.");
     }
 
     if (request.ExpiresInDays is < MinExpiryDays or > MaxExpiryDays)
-        return Results.BadRequest(new
-        {
-            error = $"'expiresInDays' must be between {MinExpiryDays} and {MaxExpiryDays}."
-        });
+        return Error(StatusCodes.Status400BadRequest,
+            $"'expiresInDays' must be between {MinExpiryDays} and {MaxExpiryDays}.");
 
     using var connection = OpenConnection(connectionString);
     var createdAt = DateTime.UtcNow;
@@ -71,7 +103,7 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
     {
         // Custom alias: a single attempt, 409 if it is already taken
         if (!TryInsertLink(connection, alias, url, createdAt, expiresAt))
-            return Results.Conflict(new { error = $"The alias '{alias}' is already taken." });
+            return Error(StatusCodes.Status409Conflict, $"The alias '{alias}' is already taken.");
 
         code = alias;
     }
@@ -89,9 +121,8 @@ app.MapPost("/api/links", (CreateLinkRequest request, HttpContext context) =>
         }
 
         if (code is null)
-            return Results.Json(
-                new { error = "Could not generate a unique short code. Please try again." },
-                statusCode: StatusCodes.Status500InternalServerError);
+            return Error(StatusCodes.Status500InternalServerError,
+                "Could not generate a unique short code. Please try again.");
     }
 
     var shortUrl = BuildShortUrl(context, code);
@@ -104,10 +135,10 @@ app.MapGet("/api/links", (int? page, int? pageSize, HttpContext context) =>
     var size = pageSize ?? DefaultPageSize;
 
     if (currentPage < 1)
-        return Results.BadRequest(new { error = "'page' must be 1 or greater." });
+        return Error(StatusCodes.Status400BadRequest, "'page' must be 1 or greater.");
 
     if (size < 1 || size > MaxPageSize)
-        return Results.BadRequest(new { error = $"'pageSize' must be between 1 and {MaxPageSize}." });
+        return Error(StatusCodes.Status400BadRequest, $"'pageSize' must be between 1 and {MaxPageSize}.");
 
     using var connection = OpenConnection(connectionString);
 
@@ -165,7 +196,7 @@ app.MapGet("/api/links/{code}", (string code) =>
     using var reader = command.ExecuteReader();
 
     if (!reader.Read())
-        return Results.NotFound(new { error = $"No link found with code '{code}'." });
+        return Error(StatusCodes.Status404NotFound, $"No link found with code '{code}'.");
 
     return Results.Ok(new
     {
@@ -190,7 +221,7 @@ app.MapDelete("/api/links/{code}", (string code) =>
 
     return deleted == 1
         ? Results.NoContent()
-        : Results.NotFound(new { error = $"No link found with code '{code}'." });
+        : Error(StatusCodes.Status404NotFound, $"No link found with code '{code}'.");
 });
 
 app.MapGet("/{code}", (string code) =>
@@ -219,14 +250,16 @@ app.MapGet("/{code}", (string code) =>
 
     // Nothing was updated: the link is either expired or does not exist
     if (LinkExists(connection, code))
-        return Results.Json(
-            new { error = "This link has expired." },
-            statusCode: StatusCodes.Status410Gone);
+        return Error(StatusCodes.Status410Gone, "This link has expired.");
 
-    return Results.NotFound();
+    return Error(StatusCodes.Status404NotFound, $"No link found with code '{code}'.");
 });
 
 app.Run();
+
+// Every error response uses the same { "error": "..." } shape
+static IResult Error(int statusCode, string message) =>
+    Results.Json(new ErrorResponse(message), statusCode: statusCode);
 
 // Create the links table if it does not exist yet
 static void InitializeDatabase(string connectionString)
@@ -301,3 +334,5 @@ static string GenerateCode()
 }
 
 record CreateLinkRequest(string? Url, string? Alias, int? ExpiresInDays);
+
+record ErrorResponse(string Error);
