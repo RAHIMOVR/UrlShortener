@@ -126,6 +126,24 @@
             background: #ffffff;
         }
 
+        button.danger {
+            padding: 4px 10px;
+            font-size: 13px;
+            background: #ffffff;
+            color: #b42318;
+            border: 1px solid #ffc9c4;
+        }
+
+        button.danger:hover {
+            background: #fff1f0;
+        }
+
+        button.danger:disabled {
+            color: #8c959f;
+            border-color: #d0d7de;
+            background: #ffffff;
+        }
+
         .error {
             margin-top: 16px;
             padding: 12px 16px;
@@ -184,7 +202,7 @@
             padding: 10px 12px;
             text-align: left;
             border-bottom: 1px solid #eaeef2;
-            vertical-align: top;
+            vertical-align: middle;
         }
 
         th {
@@ -210,7 +228,7 @@
         }
 
         .url-cell {
-            max-width: 320px;
+            max-width: 280px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -223,6 +241,11 @@
         .date-cell {
             white-space: nowrap;
             color: #656d76;
+        }
+
+        .actions-cell {
+            text-align: right;
+            white-space: nowrap;
         }
 
         .expired {
@@ -324,6 +347,7 @@
                     <th class="number-cell">Clicks</th>
                     <th>Created</th>
                     <th>Expires</th>
+                    <th class="actions-cell"></th>
                 </tr>
                 </thead>
                 <tbody id="links-body"></tbody>
@@ -415,6 +439,9 @@
             copyButton.textContent = "Copy";
             result.classList.remove("hidden");
             form.reset();
+
+            // New links are newest, so jump to the first page
+            await loadLinks(1);
         } catch {
             show(errorBox, "Could not reach the server. Is it running?");
         } finally {
@@ -491,13 +518,27 @@
         return cell;
     }
 
+    function deleteCell(code) {
+        const cell = document.createElement("td");
+        cell.className = "actions-cell";
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "danger";
+        button.textContent = "Delete";
+        button.addEventListener("click", () => deleteLink(code, button));
+
+        cell.appendChild(button);
+        return cell;
+    }
+
     function renderLinks(items) {
         linksBody.replaceChildren();
 
         if (items.length === 0) {
             const row = document.createElement("tr");
             const cell = textCell("No links yet. Create one above.", "empty");
-            cell.colSpan = 5;
+            cell.colSpan = 6;
             row.appendChild(cell);
             linksBody.appendChild(row);
             return;
@@ -510,6 +551,7 @@
             row.appendChild(textCell(link.clicks, "number-cell"));
             row.appendChild(textCell(formatDate(link.createdAt), "date-cell"));
             row.appendChild(expiresCell(link.expiresAt));
+            row.appendChild(deleteCell(link.code));
             linksBody.appendChild(row);
         }
     }
@@ -534,6 +576,12 @@
             }
 
             const data = await response.json();
+
+            // If the page is now empty (e.g. its last link was deleted), go back one page
+            if (data.items.length === 0 && data.page > 1) {
+                return loadLinks(data.page - 1);
+            }
+
             currentPage = data.page;
             totalPages = Math.max(data.totalPages, 1);
 
@@ -541,6 +589,33 @@
             renderPagination(data.total);
         } catch {
             show(listError, "Could not load links. Is the server running?");
+        }
+    }
+
+    async function deleteLink(code, button) {
+        if (!confirm(`Delete the link "${code}"? This cannot be undone.`)) {
+            return;
+        }
+
+        button.disabled = true;
+        hide(listError);
+
+        try {
+            const response = await fetch(`/api/links/${encodeURIComponent(code)}`, {
+                method: "DELETE"
+            });
+
+            // 404 means it is already gone, so refreshing the table is still correct
+            if (!response.ok && response.status !== 404) {
+                show(listError, await readError(response));
+                button.disabled = false;
+                return;
+            }
+
+            await loadLinks(currentPage);
+        } catch {
+            show(listError, "Could not reach the server. Is it running?");
+            button.disabled = false;
         }
     }
 
